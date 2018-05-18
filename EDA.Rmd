@@ -1,0 +1,769 @@
+---
+title: "Pump it Up: Data Mining the Water Table"
+author: Jenna Allen
+date: 2018-05-15
+output: github_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+```{r load-libraries}
+library(tidyverse)
+library(lubridate)
+library(caret)
+```
+
+
+# Get the Data ####
+```{r get-data}
+# assuming vales with "unknown" are the same as NA
+raw_training_values <- read_csv("training_set_values.csv", na = c("", "NA", "unknown"))
+raw_training_labels <- read_csv("training_set_labels.csv", na = c("", "NA", "unknown"))
+raw_test_values <- read_csv("test_set_values.csv", na = c("", "NA", "unknown"))
+```
+# Data Dictionary ####
+
+amount_tsh - Total static head (amount water available to waterpoint)
+date_recorded - The date the row was entered
+funder - Who funded the well
+gps_height - Altitude of the well
+installer - Organization that installed the well
+longitude - GPS coordinate
+latitude - GPS coordinate
+wpt_name - Name of the waterpoint if there is one
+num_private -
+basin - Geographic water basin
+subvillage - Geographic location
+region - Geographic location
+region_code - Geographic location (coded)
+district_code - Geographic location (coded)
+lga - Geographic location
+ward - Geographic location
+population - Population around the well
+public_meeting - True/False
+recorded_by - Group entering this row of data
+scheme_management - Who operates the waterpoint
+scheme_name - Who operates the waterpoint
+permit - If the waterpoint is permitted
+construction_year - Year the waterpoint was constructed
+extraction_type - The kind of extraction the waterpoint uses
+extraction_type_group - The kind of extraction the waterpoint uses
+extraction_type_class - The kind of extraction the waterpoint uses
+management - How the waterpoint is managed
+management_group - How the waterpoint is managed
+payment - What the water costs
+payment_type - What the water costs
+water_quality - The quality of the water
+quality_group - The quality of the water
+quantity - The quantity of water
+quantity_group - The quantity of water
+source - The source of the water
+source_type - The source of the water
+source_class - The source of the water
+waterpoint_type - The kind of waterpoint
+waterpoint_type_group - The kind of waterpoint
+    
+# Exploratory Data Analysis ####
+
+Combine training values with labels. And combine test data with training data because any mods (adding new features, removing features, etc.) made to the training data needs to be made to the test data. Also, if there are any values in the test data that aren't in the training data, combining the two datasets, converting to factors, and then splitting will fix this issue.
+
+```{r combine-data}
+combined_data <- raw_training_values %>% 
+  left_join(raw_training_labels, by = "id") %>% 
+  bind_rows(raw_test_values, .id = "label") %>% 
+  mutate_at(vars(label), funs(recode(., "1" = "train",
+                                     "2" = "test")))
+  
+```
+
+
+## amount_tsh - Total static head (amount water available to waterpoint) ####
+
+```{r amount-tsh}
+combined_data %>% 
+  filter(label == "train") %>% 
+  select(amount_tsh) %>% 
+  summary()
+
+combined_data %>% 
+  filter(label == "train") %>% 
+  select(amount_tsh) %>% 
+  table()
+```
+
+Not sure what units amt_tsh is in. Also noticed lots of zero values. Does zero really mean zero or does it mean NA? 
+
+Look at status_group to see if waterpoints with an amt_tsh of 0 are functional. 
+
+```{r amount-tsh-NA}
+combined_data %>% 
+  filter(label == "train", amount_tsh == 0) %>% 
+  group_by(status_group) %>% 
+  summarize(n = n()) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+```
+
+Of the waterpoints with 0 water available almost 50% are functional. That doesn't make much sense. Assuming here that 0 means NA. 
+
+```{r amount-tsh-mod-NA}
+mod_data <- combined_data %>% 
+  mutate_at(vars(amount_tsh), funs(replace(., . == 0, NA)))
+
+mod_data %>% 
+  filter(label == "train") %>%
+  count(is.na(amount_tsh)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+```
+
+70% of amount_tsh is NA in the training data. With that many missing values, imputing the missing data would likely not be very helpful. Excluding this variable because of the large percent of missing data.
+
+```{r amount-tsh-remove}
+mod_data <- mod_data %>% 
+  select(-amount_tsh)
+```
+
+## date_recorded - The date the row was entered and construction_year - Year the waterpoint was constructed ####
+
+```{r date-recorded-construction-year}
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(date_recorded, construction_year) %>% 
+  summary()
+
+mod_data %>% 
+  filter(label == "train") %>%
+  mutate(cat = if_else(construction_year == 0, "0", "not 0")) %>% 
+  count(cat) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+```
+
+About 35% of the construction_ year values are 0, which is impossible, so I'm assuming in this case 0 means NA.
+
+```{r date-recorded-construction-year-NA}
+mod_data <- mod_data %>% 
+  mutate_at(vars(construction_year), funs(replace(., . == 0, NA)))
+```
+
+I want to create some new variables with these two fields:
+
+1) waterpoint_age = date recorded year - construction year
+2) month of date recorded
+3) day of date recorded
+
+```{r date-recorded-construction-year-new-features}
+mod_data <- mod_data %>% 
+  mutate(waterpoint_age = year(date_recorded) - construction_year,
+         month_recorded = month(date_recorded),
+         day_recorded = day(date_recorded))
+
+mod_data %>% 
+  select(waterpoint_age, month_recorded, day_recorded) %>% 
+  summary()
+```
+
+There are 9 observations in the training data and 3 in the test data that have negative values for waterpoint_age. I'm going to assume this is some type of data error and treat those as NAs. I'm also going to remove recorded date and construction year, now that I have a new age variable.
+
+```{r date-recorded-construction-year-new-features-fix}
+mod_data %>% 
+  filter(waterpoint_age < 0)
+
+mod_data <- mod_data %>% 
+  select(-date_recorded, -construction_year) %>% 
+  mutate_at(vars(waterpoint_age), funs(replace(., . < 0, NA)))
+```
+
+## funder - Who funded the well ####
+
+```{r funder}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(funder) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels) %>% 
+  map(length)
+
+high_freq_funder <- mod_data %>% 
+  filter(label == "train") %>% 
+  group_by(funder) %>% 
+  count() %>% 
+  arrange(desc(n)) %>% 
+  filter(n > 500, !is.na(funder), funder != 0) %>% 
+  pull(funder)
+```
+
+The funder feature has almost 2000 levels in the training data which is a lot. There are also 0s in this variable that need to be converted to NA. Unfortunately, I don't have enough info about this variable to tell where funders are the same but possible entered differently (e.g. Are Ministry of Water and Water differenct?) I'm going to reduce the levels of this variable by keeping values seen more than 500 times in the training data as is and assign everything else to an "Other" category.
+
+```{r funder-mod}
+mod_data <- mod_data %>% 
+  mutate_at(vars(funder), funs(replace(., . == 0, NA))) %>% 
+  mutate_at(vars(funder), funs(if_else(. %in% high_freq_funder, funder, "Other")))
+```
+
+## gps_height - Altitude of the well ####
+
+I am assuming gps_height is a measure of altitude from sea level.
+
+```{r gps-height}
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(gps_height) %>% 
+  summary()
+
+mod_data %>% 
+  filter(label == "train") %>%
+  mutate(cat = if_else(gps_height == 0, "0", "not 0")) %>% 
+  count(cat) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+```
+
+Almost 35% of the gps_height values are 0. Are these real 0s or actually NAs? Looking at a topo map of Tanzania (http://en-us.topographic-map.com/places/Tanzania-8017096/), the only places it seems reasonable for these wells to be located are on the coast. Must of the other areas of Tanzania are mountainous. Using latitude and logitude let's see if we can determine if the waterpoints with a supposed gps_height of 0 are near the coast.
+
+```{r gps-height-plots}
+mod_data %>% 
+  filter(label == "train") %>%
+  mutate(cat = if_else(gps_height == 0, "0", "not 0")) %>% 
+  filter(latitude != 0, longitude != 0) %>% 
+  ggplot(aes(x = longitude, y = latitude)) +
+  geom_point(aes(color = cat))
+
+mod_data %>% 
+  filter(label == "train") %>%
+  mutate(cat = if_else(gps_height == 0, "0", "not 0")) %>% 
+  filter(latitude != 0, longitude != 0) %>% 
+  ggplot(aes(x = longitude, y = latitude)) +
+  geom_point(aes(color = gps_height))
+```
+
+Based on these plots, the waterpoints with gps_height of 0 are not where I would expect them to be based on the topo map. So, I'm going to assume 0 for gps_height means NA. These missing values do not seem to be random, but rather it seems specific areas do not have data on gps_height. So, I will not try to impute these missing values.
+
+I am going to create a binary column that indicates if the gps_height data is missing. And I'm also going to create a categorical variable with gps_height bins.
+
+```{r gps-height-NA}
+mod_data <- mod_data %>% 
+  mutate_at(vars(gps_height), funs(replace(., . == 0, NA))) %>% 
+  mutate(gps_height_missing = if_else(is.na(gps_height), 1, 0),
+         gps_height_bins = case_when(gps_height < 0 ~ "Negative",
+                                     between(gps_height, 0, 499) ~ "0 - 499",
+                                     between(gps_height, 500, 999) ~ "500 - 999",
+                                     between(gps_height, 1000, 1499) ~ "1000 - 1499",
+                                     between(gps_height, 1500, 1999) ~ "1500 - 1999",
+                                     between(gps_height, 2000, 2499) ~ "2000 - 2499",
+                                     between(gps_height, 2500, 2999) ~ "2500 - 2999",
+                                     TRUE ~ "Other"
+                                     )
+         )
+```
+
+## installer - Organization that installed the well ####
+
+```{r installer}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(installer) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels) %>% 
+  map(length)
+
+high_freq_installer <- mod_data %>% 
+  filter(label == "train") %>% 
+  group_by(installer) %>% 
+  count() %>% 
+  arrange(desc(n)) %>% 
+  filter(n > 500, !is.na(installer), installer != 0) %>% 
+  pull(installer)
+```
+
+Going to treat installer just like funder, since there are many levels that need to be reduced to make this a usable variable. 
+
+```{r installer-mod}
+mod_data <- mod_data %>% 
+  mutate_at(vars(installer), funs(replace(., . == 0, NA))) %>% 
+  mutate_at(vars(installer), funs(if_else(. %in% high_freq_installer, installer, "Other")))
+```
+
+## longitude - GPS coordinate and latitude - GPS coordinate ####
+
+```{r long-lat}
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(longitude, latitude) %>% 
+  summary()
+
+mod_data %>% 
+  filter(label == "train", latitude > -1e-06, longitude < 1e-06)
+  
+```
+
+The coordinates 0 0 are not found in Tanzania, so going to treat those as NA.
+
+```{r long-lat-NA}
+mod_data <- mod_data %>% 
+  mutate_at(vars(longitude), funs(replace(., . < 1e-06, NA))) %>% 
+  mutate_at(vars(latitude), funs(replace(., . > -1e-06, NA)))
+```
+
+Can any of the other location data be used to populate the NAs in latitude and longitude?
+
+## Geographic location
+basin - Geographic water basin
+subvillage - Geographic location
+region - Geographic location
+region_code - Geographic location (coded)
+district_code - Geographic location (coded)
+lga - Geographic location
+ward - Geographic location
+
+```{r}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(basin, subvillage, region, lga, ward) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels) %>% 
+  map(length)
+
+mod_data %>%
+  filter(label == "train") %>% 
+  select(district_code, region_code) %>%
+  table()
+
+mod_data %>%
+  filter(label == "train") %>%
+  select(lga) %>%
+  mutate_if(is.character, as.factor) %>%
+  map(levels)
+
+mod_data %>%
+  filter(label == "train") %>% 
+  select(basin, subvillage, region, lga, ward) %>% 
+  count(is.na(basin), is.na(subvillage), is.na(region), is.na(lga), is.na(ward))
+
+mod_data %>%
+  filter(label == "train") %>% 
+  count(lga) %>% 
+  arrange(desc(n))
+```
+
+There are many districts in one region so district seems more grainular. Hierachy of region info seems to go something like this:
+
+basin
+region/region code
+district
+lga
+ward
+subvillage
+lat/long
+
+Going to use mean values for lat long from subvillage, ward, lga, and district to fill in missing lat long values. Using these 4 because subvillage leaves 720 with NaN, ward leaves 59 with NaN, lga leaves 1 with NaN and district leaves no values with NaN.
+
+```{r}
+long_lat_means <- function(data, group) {
+  group <- enquo(group)
+  var_long <- paste0(quo_name(group), "_mean_long")
+  var_lat <- paste0(quo_name(group), "_mean_lat")
+  
+  data %>% 
+  group_by(!!group) %>% 
+  mutate(!!var_long := mean(.data$longitude, na.rm = TRUE),
+         !!var_lat := mean(.data$latitude, na.rm = TRUE)) %>%
+  ungroup()
+}
+
+mod_data <- long_lat_means(mod_data, subvillage)
+mod_data <- long_lat_means(mod_data, ward)
+mod_data <- long_lat_means(mod_data, lga)
+mod_data <- long_lat_means(mod_data, district_code)
+
+# Impute missing longitude/latitude values
+mod_data <- mod_data %>%
+  mutate(longitude = case_when(!is.na(longitude) ~ longitude,
+                                   !is.nan(subvillage_mean_long) ~ subvillage_mean_long,
+                                   !is.nan(ward_mean_long) ~ ward_mean_long,
+                                   !is.nan(lga_mean_long) ~ lga_mean_long,
+                                   TRUE ~ district_code_mean_long),
+         latitude = case_when(!is.na(latitude) ~ latitude,
+                                   !is.nan(subvillage_mean_lat) ~ subvillage_mean_lat,
+                                   !is.nan(ward_mean_lat) ~ ward_mean_lat,
+                                   !is.nan(lga_mean_lat) ~ lga_mean_lat,
+                                   TRUE ~ district_code_mean_lat)
+         ) %>% 
+  select(-contains("_mean_"), -subvillage, -ward, -region_code)
+
+table(mod_data$region, mod_data$region_code)
+
+```
+
+Removed subvillage and ward because there are too many levels. 
+
+Are region and region_code different? No, it looks like each region code corresponds to a particular region. However, it does look like some of the regions are coded improperly (e.g. region 5, 4006 correspond to Morogoro and only 34 to Tanga). Keeping region and removing region_code thinking that entering the name of a region in the data is more accurate than entering an arbitrary code.
+
+## wpt_name - Name of the waterpoint if there is one ####
+
+I don't see how the name of the waterpoint would have any influence on predicting it's functioning status and this feature has a lot of levels. I'm going to exclude it.
+```{r}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(wpt_name) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels) %>% 
+  map(length)
+
+mod_data <- mod_data %>% 
+  select(-wpt_name)
+```
+
+## num_private - ####
+
+The definition for this variable is missing and I'm not sure what it is telling me.
+
+```{r}
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(num_private) %>% 
+  summary()
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(num_private) %>% 
+  table()
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(num_private) %>% 
+  mutate(cat = if_else(num_private == 0, "0", "not 0")) %>% 
+  count(cat) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+```
+
+98% of the training data has a value of 0 for this field. This is likely a near-zero predictor and can become a zero-variance predictor when the data are split into cross-validation/bootstrap sub-samples or a few samples may have an undue influence on the model.
+
+```{r}
+nzv <- mod_data %>% 
+  select(-label, -id, -status_group) %>% 
+  nearZeroVar()
+
+mod_data <- mod_data %>% 
+  select(-num_private)
+```
+
+Using nearZeroVar() from the caret package does indicate that num_private is a near-zero variance predictor so I am removing it.
+
+## population - Population around the well ####
+
+```{r}
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(population) %>% 
+  summary()
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(population) %>% 
+  mutate(cat = if_else(population == 0, "0", "not 0")) %>% 
+  count(cat) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+```
+
+About 36% of the training data has 0 for population. It doesn't make much sense that there would be a waterpoint for a population of none, but this is population around the well. So, maybe the people who use the well have to travel some distance to get to it? Since, 0s are used to represent NAs in other fields, I have a feeling that is what is happening here. I'm goin to plot population and lat and long to see what patterns exist.
+
+```{r}
+mod_data %>% 
+  filter(label == "train") %>%
+  mutate(cat = if_else(population == 0, "0", "not 0")) %>% 
+  ggplot(aes(x = longitude, y = latitude)) +
+  geom_point(aes(color = cat))
+
+mod_data %>% 
+  filter(label == "train") %>%
+  ggplot(aes(x = longitude, y = latitude)) +
+  geom_point(aes(color = population))
+```
+
+This plot looks very similar to the one I did for gps_height. Values of 0 for population seem to indicate NA values. The population data doesn't appear to be missing at random, so I'm not going to impute it.
+
+```{r}
+mod_data <- mod_data %>% 
+  mutate_at(vars(population), funs(replace(., . == 0, NA)))
+```
+
+
+## public_meeting - True/False ####
+
+```{r}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(public_meeting) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels)
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(public_meeting)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+  
+```
+
+Leaving this field as is.
+
+## recorded_by - Group entering this row of data ####
+
+```{r}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(recorded_by) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels)
+```
+
+This feature only has one value for all the training data and was revealed earlier to be a zero variance predictor, so I am removing it.
+
+```{r}
+mod_data <- mod_data %>% 
+  select(-recorded_by)
+```
+
+## scheme_management - Who operates the waterpoint and scheme_name - Who operates the waterpoint ####
+
+```{r}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(scheme_management, scheme_name) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels) %>% 
+  map(length)
+
+mod_data %>%
+  filter(label == "train") %>% 
+  select(scheme_management) %>% 
+  table()
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(scheme_management)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+
+mod_data %>%
+  filter(label == "train") %>% 
+  select(scheme_name) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels)
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(scheme_name)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  group_by(scheme_name) %>% 
+  count() %>% 
+  arrange(desc(n))
+```
+
+Removing scheme_name because almost 50% of the data is missing and K is the top name with only 682 instances. 
+
+```{r}
+mod_data <- mod_data %>% 
+  select(-scheme_name)
+```
+
+
+## permit - If the waterpoint is permitted
+
+```{r}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(permit) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels)
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(permit)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+```
+
+Leaving permit as is.
+
+## extraction_type - The kind of extraction the waterpoint uses, extraction_type_group - The kind of extraction the waterpoint uses, extraction_type_class - The kind of extraction the waterpoint uses
+
+```{r}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(extraction_type, extraction_type_group, extraction_type_class) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels) %>% 
+  map(length)
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(extraction_type)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+```
+
+These appear to be an extraction type hierarchy as follows:
+
+extraction_type_class
+extraction_type_group
+extraction_type
+
+No missing values for any of these features. Give very similar information at varing granularities. Going to keep all, but may only use 1 field in a given model.
+
+## management - How the waterpoint is managed and management_group - How the waterpoint is managed
+
+```{r}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(management, management_group) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels) %>% 
+  map(length)
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(management)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(management_group)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+```
+
+Management is a more grainular version of management_group. Keeping both for now.
+
+## payment - What the water costs and payment_type - What the water costs
+
+```{r}
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(payment, payment_type) %>% 
+  table(useNA = "ifany")
+```
+
+There is no difference between payment and payment_type. Removing payment_type.
+
+```{r}
+mod_data <- mod_data %>% 
+  select(-payment_type)
+```
+
+## water_quality - The quality of the water and quality_group - The quality of the water
+
+```{r}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(water_quality, quality_group) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels) %>% 
+  map(length)
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(water_quality)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(quality_group)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+
+mod_data %>%
+  filter(label == "train") %>% 
+  select(water_quality, quality_group) %>% 
+  table()
+
+```
+
+Water quality is a more granular version than quality group. Keeping both for now.
+
+## quantity - The quantity of water and quantity_group - The quantity of water ####
+
+```{r}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(quantity, quantity_group) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels) %>% 
+  map(length)
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(quantity)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(quantity_group)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+
+mod_data %>%
+  filter(label == "train") %>% 
+  select(quantity, quantity_group) %>% 
+  table()
+```
+
+There is no difference between these two fields. Removing quantity_group.
+
+```{r}
+mod_data <- mod_data %>% 
+  select(-quantity_group)
+```
+
+## source - The source of the water, source_type - The source of the water, and source_class - The source of the water
+
+```{r}
+mod_data %>%
+  filter(label == "train") %>% 
+  select(source, source_type, source_class) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  map(levels) %>% 
+  map(length)
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(source)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(source_type)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  count(is.na(source_class)) %>% 
+  mutate(percent = round((n / sum(n) * 100), 1))
+
+mod_data %>%
+  filter(label == "train") %>% 
+  select(source, source_type) %>% 
+  table()
+```
+
+Hierarchy is:
+
+source_class
+source_type
+source
+
+Keeping all for now.
+
+## waterpoint_type - The kind of waterpoint and waterpoint_type_group - The kind of waterpoint
+
+```{r}
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(waterpoint_type, waterpoint_type_group) %>% 
+  table(useNA = "ifany")
+```
+
+These variables are essentially the same except for communal standpipe is 2 categories in the waterpoint_type variable instead of just 1. Going to remove waterpoint_type_group.
+
+```{r}
+mod_data <- mod_data %>% 
+  select(-waterpoint_type_group)
+```

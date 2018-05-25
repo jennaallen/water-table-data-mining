@@ -840,6 +840,8 @@ mod_data %>%
 
 I want to remove gps_height, population, and waterpoint_age from the data since those had a high percent of NAs and I created a grouping categorical variable for those features. I also want to replace any NAs in the data with "Unknown" and treat it like another factor level. I want to convert all character vectors to factors for modeling and remove the spaces in the status group names.
 
+
+
 ```{r}
 mod_data <- mod_data %>% 
   select(-gps_height, -population, -waterpoint_age) %>% 
@@ -848,6 +850,18 @@ mod_data <- mod_data %>%
   
 levels(mod_data$status_group) <- c("functional", "functional_needs_repair", "non_functional")
 ```
+
+```{r}
+train_mod_data <- mod_data %>% 
+  filter(label == "train") %>% 
+  select(-label, -id)
+
+test_mod_data <- mod_data %>% 
+  filter(label == "test") %>% 
+  select(-label, -status_group)
+```
+
+
 
 ## One Hot Encoding
 

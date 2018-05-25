@@ -1,0 +1,190 @@
+---
+title: "Pump it Up: Data Mining the Water Table"
+author: Jenna Allen
+date: 2018-05-22
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(h2o)
+```
+
+```{r}
+#initialize h20
+h2o.init()
+```
+
+```{r}
+predictors <- names(train_mod_data)[-18]
+target <- "status_group"
+```
+
+```{r}
+training_hex <- as.h2o(train_mod_data, destination_frame = "training.hex")
+test_hex <- as.h2o(test_mod_data, destination_frame = "test.hex")
+```
+
+```{r}
+rf_model <- h2o.randomForest(
+  x = predictors,
+  y = target,
+  training_frame = training_hex,
+  model_id = "rf_ntrees100",
+  balance_classes = TRUE,
+  ntrees = 100, 
+  mtries = 10,
+  seed = 1234)
+```
+
+```{r}
+h2o.confusionMatrix(rf_model)
+```
+
+```{r}
+test_predictions <- as.data.frame(h2o.predict(rf_model, test_hex))
+```
+
+```{r}
+submission_1 <- test_mod_data %>% 
+  select(id) %>% 
+  bind_cols(select(test_predictions, predict)) %>% 
+  mutate_at(vars(predict), funs(str_replace_all(., "_", " "))) %>% 
+  rename(status_group = predict)
+
+write.csv(submission_1, "submission1.csv", row.names = FALSE)
+```
+
+```{r}
+rf_model_1000 <- h2o.randomForest(
+  x = predictors,
+  y = target,
+  training_frame = training_hex,
+  model_id = "rf_ntrees1000",
+  balance_classes = TRUE,
+  ntrees = 1000, 
+  mtries = 20,
+  seed = 1234)
+```
+
+```{r}
+h2o.confusionMatrix(rf_model_1000)
+```
+
+```{r}
+test_predictions_1000 <- as.data.frame(h2o.predict(rf_model_1000, test_hex))
+```
+
+```{r}
+submission_2 <- test_mod_data %>% 
+  select(id) %>% 
+  bind_cols(select(test_predictions_1000, predict)) %>% 
+  mutate_at(vars(predict), funs(str_replace_all(., "_", " "))) %>% 
+  rename(status_group = predict)
+
+write.csv(submission_2, "submission2.csv", row.names = FALSE)
+```
+
+```{r}
+rf_model_nfold <- h2o.randomForest(
+  x = predictors,
+  y = target,
+  nfolds = 10,
+  training_frame = training_hex,
+  model_id = "rf_ntrees100_nfold_10",
+  balance_classes = TRUE,
+  ntrees = 100, 
+  mtries = 10,
+  seed = 1234)
+```
+
+```{r}
+h2o.confusionMatrix(rf_model_nfold)
+```
+
+
+```{r}
+rf_model_nobal <- h2o.randomForest(
+  x = predictors,
+  y = target,
+  training_frame = training_hex,
+  model_id = "rf_ntrees100_nobal",
+  ntrees = 100, 
+  mtries = 10,
+  seed = 1234)
+```
+```{r}
+h2o.confusionMatrix(rf_model_nobal)
+```
+
+
+```{r}
+rf_model_100_mtries_20 <- h2o.randomForest(
+  x = predictors,
+  y = target,
+  training_frame = training_hex,
+  model_id = "rf_ntrees100_mtries20",
+  balance_classes = TRUE,
+  ntrees = 100, 
+  mtries = 20,
+  seed = 1234)
+```
+
+```{r}
+h2o.confusionMatrix(rf_model_100_mtries_20)
+```
+
+```{r}
+rf_model_100_mtries5 <- h2o.randomForest(
+  x = predictors,
+  y = target,
+  training_frame = training_hex,
+  model_id = "rf_ntrees100_mtries5",
+  balance_classes = TRUE,
+  ntrees = 100,
+  mtries = 5,
+  seed = 1234)
+```
+
+```{r}
+h2o.confusionMatrix(rf_model_100_mtries5)
+```
+
+```{r}
+rf_model_100_mtries23 <- h2o.randomForest(
+  x = predictors,
+  y = target,
+  training_frame = training_hex,
+  model_id = "rf_ntrees100_mtries23",
+  balance_classes = TRUE,
+  ntrees = 100,
+  mtries = 23,
+  seed = 1234)
+```
+
+```{r}
+h2o.confusionMatrix(rf_model_100_mtries23)
+```
+
+
+```{r}
+gbm_model <- h2o.gbm(
+  x = predictors,
+  y = target,
+  training_frame = training_hex,
+  model_id = "gbm_ntrees100",
+  balance_classes = TRUE,
+  ntrees = 100,
+  seed = 1234)
+```
+
+```{r}
+h2o.confusionMatrix(gbm_model)
+```
+

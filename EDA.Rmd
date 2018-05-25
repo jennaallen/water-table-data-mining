@@ -17,7 +17,6 @@ library(lubridate)
 library(caret)
 ```
 
-
 # Get the Data ####
 ```{r get-data}
 # assuming vales with "unknown" are the same as NA
@@ -72,12 +71,12 @@ waterpoint_type_group - The kind of waterpoint
 Combine training values with labels. And combine test data with training data because any mods (adding new features, removing features, etc.) made to the training data needs to be made to the test data. Also, if there are any values in the test data that aren't in the training data, combining the two datasets, converting to factors, and then splitting will fix this issue.
 
 ```{r combine-data}
+# for label 1 is train and 2 is test
 combined_data <- raw_training_values %>% 
   left_join(raw_training_labels, by = "id") %>% 
   bind_rows(raw_test_values, .id = "label") %>% 
   mutate_at(vars(label), funs(recode(., "1" = "train",
-                                     "2" = "test")))
-  
+                                        "2" = "test")))
 ```
 
 
@@ -151,15 +150,25 @@ mod_data <- mod_data %>%
 I want to create some new variables with these two fields:
 
 1) waterpoint_age = date recorded year - construction year
-2) month of date recorded
-3) day of date recorded
+2) year of date recorded
+3) month of date recorded
+4) day of date recorded
+5) season = Dec - Feb: hot_dry
+            March - May: rainy
+            June - October: cool_dry
+            Nov - short_rain
 
 ```{r date-recorded-construction-year-new-features}
 mod_data <- mod_data %>% 
   mutate(waterpoint_age = year(date_recorded) - construction_year,
+         year_recorded = year(date_recorded),
          month_recorded = month(date_recorded),
-         day_recorded = day(date_recorded))
-
+         day_recorded = day(date_recorded),
+         season = case_when(month_recorded %in% c(12, 1, 2) ~ "hot_dry",
+                            month_recorded %in% c(3, 4, 5) ~ "rainy",
+                            month_recorded %in% c(6, 7, 8, 9, 10) ~ "cool_dry",
+                            TRUE ~ "short_rain")
+         )
 mod_data %>% 
   select(waterpoint_age, month_recorded, day_recorded) %>% 
   summary()
@@ -171,9 +180,34 @@ There are 9 observations in the training data and 3 in the test data that have n
 mod_data %>% 
   filter(waterpoint_age < 0)
 
+mod_data %>%
+  select(waterpoint_age) %>%
+  summary()
+
+mod_data %>%
+  select(waterpoint_age) %>% 
+  ggplot(aes(x = waterpoint_age)) +
+  geom_histogram()
+
 mod_data <- mod_data %>% 
   select(-date_recorded, -construction_year) %>% 
-  mutate_at(vars(waterpoint_age), funs(replace(., . < 0, NA)))
+  mutate_at(vars(waterpoint_age), funs(replace(., . < 0, NA))) %>% 
+  mutate(waterpoint_age_bin = case_when(between(waterpoint_age, 0, 4) ~ "0_4",
+                                        between(waterpoint_age, 5, 9) ~ "5_9",
+                                        between(waterpoint_age, 10, 14) ~ "10_14",
+                                        between(waterpoint_age, 15, 19) ~ "15_19",
+                                        between(waterpoint_age, 20, 24) ~ "20_24",
+                                        between(waterpoint_age, 25, 29) ~ "25_29",
+                                        between(waterpoint_age, 30, 34) ~ "30_34",
+                                        between(waterpoint_age, 35, 39) ~ "35_39",
+                                        between(waterpoint_age, 40, 44) ~ "40_44",
+                                        waterpoint_age > 44 ~ "Above_44",
+                                        TRUE ~ "Other"))
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(waterpoint_age_bin) %>% 
+  table()
 ```
 
 ## funder - Who funded the well ####
@@ -240,19 +274,18 @@ mod_data %>%
 
 Based on these plots, the waterpoints with gps_height of 0 are not where I would expect them to be based on the topo map. So, I'm going to assume 0 for gps_height means NA. These missing values do not seem to be random, but rather it seems specific areas do not have data on gps_height. So, I will not try to impute these missing values.
 
-I am going to create a binary column that indicates if the gps_height data is missing. And I'm also going to create a categorical variable with gps_height bins.
+I'm going to create a categorical variable with gps_height bins.
 
 ```{r gps-height-NA}
 mod_data <- mod_data %>% 
   mutate_at(vars(gps_height), funs(replace(., . == 0, NA))) %>% 
-  mutate(gps_height_missing = if_else(is.na(gps_height), 1, 0),
-         gps_height_bins = case_when(gps_height < 0 ~ "Negative",
-                                     between(gps_height, 0, 499) ~ "0 - 499",
-                                     between(gps_height, 500, 999) ~ "500 - 999",
-                                     between(gps_height, 1000, 1499) ~ "1000 - 1499",
-                                     between(gps_height, 1500, 1999) ~ "1500 - 1999",
-                                     between(gps_height, 2000, 2499) ~ "2000 - 2499",
-                                     between(gps_height, 2500, 2999) ~ "2500 - 2999",
+  mutate(gps_height_bins = case_when(gps_height < 0 ~ "Negative",
+                                     between(gps_height, 0, 499) ~ "0_499",
+                                     between(gps_height, 500, 999) ~ "500_999",
+                                     between(gps_height, 1000, 1499) ~ "1000_1499",
+                                     between(gps_height, 1500, 1999) ~ "1500_1999",
+                                     between(gps_height, 2000, 2499) ~ "2000_2499",
+                                     between(gps_height, 2500, 2999) ~ "2500_2999",
                                      TRUE ~ "Other"
                                      )
          )
@@ -317,7 +350,7 @@ district_code - Geographic location (coded)
 lga - Geographic location
 ward - Geographic location
 
-```{r}
+```{r location}
 mod_data %>%
   filter(label == "train") %>% 
   select(basin, subvillage, region, lga, ward) %>% 
@@ -359,7 +392,7 @@ lat/long
 
 Going to use mean values for lat long from subvillage, ward, lga, and district to fill in missing lat long values. Using these 4 because subvillage leaves 720 with NaN, ward leaves 59 with NaN, lga leaves 1 with NaN and district leaves no values with NaN.
 
-```{r}
+```{r missing-long-lat}
 long_lat_means <- function(data, group) {
   group <- enquo(group)
   var_long <- paste0(quo_name(group), "_mean_long")
@@ -377,6 +410,8 @@ mod_data <- long_lat_means(mod_data, ward)
 mod_data <- long_lat_means(mod_data, lga)
 mod_data <- long_lat_means(mod_data, district_code)
 
+table(mod_data$region, mod_data$region_code)
+
 # Impute missing longitude/latitude values
 mod_data <- mod_data %>%
   mutate(longitude = case_when(!is.na(longitude) ~ longitude,
@@ -390,20 +425,17 @@ mod_data <- mod_data %>%
                                    !is.nan(lga_mean_lat) ~ lga_mean_lat,
                                    TRUE ~ district_code_mean_lat)
          ) %>% 
-  select(-contains("_mean_"), -subvillage, -ward, -region_code)
-
-table(mod_data$region, mod_data$region_code)
-
+  select(-contains("_mean_"), -subvillage, -ward, -lga, -region_code)
 ```
 
-Removed subvillage and ward because there are too many levels. 
+Removed subvillage, ward, and lga because there are too many levels. 
 
 Are region and region_code different? No, it looks like each region code corresponds to a particular region. However, it does look like some of the regions are coded improperly (e.g. region 5, 4006 correspond to Morogoro and only 34 to Tanga). Keeping region and removing region_code thinking that entering the name of a region in the data is more accurate than entering an arbitrary code.
 
 ## wpt_name - Name of the waterpoint if there is one ####
 
 I don't see how the name of the waterpoint would have any influence on predicting it's functioning status and this feature has a lot of levels. I'm going to exclude it.
-```{r}
+```{r wpt-name}
 mod_data %>%
   filter(label == "train") %>% 
   select(wpt_name) %>% 
@@ -419,7 +451,7 @@ mod_data <- mod_data %>%
 
 The definition for this variable is missing and I'm not sure what it is telling me.
 
-```{r}
+```{r num-private}
 mod_data %>% 
   filter(label == "train") %>% 
   select(num_private) %>% 
@@ -440,7 +472,7 @@ mod_data %>%
 
 98% of the training data has a value of 0 for this field. This is likely a near-zero predictor and can become a zero-variance predictor when the data are split into cross-validation/bootstrap sub-samples or a few samples may have an undue influence on the model.
 
-```{r}
+```{r zero-var-num-private}
 nzv <- mod_data %>% 
   select(-label, -id, -status_group) %>% 
   nearZeroVar()
@@ -453,7 +485,7 @@ Using nearZeroVar() from the caret package does indicate that num_private is a n
 
 ## population - Population around the well ####
 
-```{r}
+```{r population}
 mod_data %>% 
   filter(label == "train") %>% 
   select(population) %>% 
@@ -465,11 +497,17 @@ mod_data %>%
   mutate(cat = if_else(population == 0, "0", "not 0")) %>% 
   count(cat) %>% 
   mutate(percent = round((n / sum(n) * 100), 1))
+
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(population) %>% 
+  ggplot(aes(x = population)) +
+  geom_histogram()
 ```
 
 About 36% of the training data has 0 for population. It doesn't make much sense that there would be a waterpoint for a population of none, but this is population around the well. So, maybe the people who use the well have to travel some distance to get to it? Since, 0s are used to represent NAs in other fields, I have a feeling that is what is happening here. I'm goin to plot population and lat and long to see what patterns exist.
 
-```{r}
+```{r population-explore}
 mod_data %>% 
   filter(label == "train") %>%
   mutate(cat = if_else(population == 0, "0", "not 0")) %>% 
@@ -482,17 +520,32 @@ mod_data %>%
   geom_point(aes(color = population))
 ```
 
-This plot looks very similar to the one I did for gps_height. Values of 0 for population seem to indicate NA values. The population data doesn't appear to be missing at random, so I'm not going to impute it.
+This plot looks very similar to the one I did for gps_height. Values of 0 for population seem to indicate NA values. The population data doesn't appear to be missing at random, so I'm not going to impute it. I'm going to create a categorical variable since so much of this data is missing.
 
-```{r}
+```{r population-NA}
 mod_data <- mod_data %>% 
-  mutate_at(vars(population), funs(replace(., . == 0, NA)))
-```
+  mutate_at(vars(population), funs(replace(., . == 0, NA))) %>% 
+  mutate(population_bins = case_when(between(population, 0, 249) ~ "0_249",
+                                     between(population, 250, 499) ~ "250_499",
+                                     between(population, 500, 999) ~ "500_999",
+                                     between(population, 1000, 1499) ~ "1000_1499",
+                                     between(population, 1500, 1999) ~ "1500_1999",
+                                     between(population, 2000, 2499) ~ "2000_2499",
+                                     between(population, 2500, 2999) ~ "2500_2999",
+                                     population > 2999 ~ "Above_3000",
+                                     TRUE ~ "Other"
+                                     )
+                   )
 
+mod_data %>% 
+  filter(label == "train") %>% 
+  select(population_bins) %>% 
+  table()
+```
 
 ## public_meeting - True/False ####
 
-```{r}
+```{r public-meeting}
 mod_data %>%
   filter(label == "train") %>% 
   select(public_meeting) %>% 
@@ -503,14 +556,13 @@ mod_data %>%
   filter(label == "train") %>% 
   count(is.na(public_meeting)) %>% 
   mutate(percent = round((n / sum(n) * 100), 1))
-  
 ```
 
 Leaving this field as is.
 
 ## recorded_by - Group entering this row of data ####
 
-```{r}
+```{r recorded-by}
 mod_data %>%
   filter(label == "train") %>% 
   select(recorded_by) %>% 
@@ -520,14 +572,14 @@ mod_data %>%
 
 This feature only has one value for all the training data and was revealed earlier to be a zero variance predictor, so I am removing it.
 
-```{r}
+```{r recorded-by-remove}
 mod_data <- mod_data %>% 
   select(-recorded_by)
 ```
 
 ## scheme_management - Who operates the waterpoint and scheme_name - Who operates the waterpoint ####
 
-```{r}
+```{r scheme-management}
 mod_data %>%
   filter(label == "train") %>% 
   select(scheme_management, scheme_name) %>% 
@@ -565,7 +617,7 @@ mod_data %>%
 
 Removing scheme_name because almost 50% of the data is missing and K is the top name with only 682 instances. 
 
-```{r}
+```{r scheme-name-remove}
 mod_data <- mod_data %>% 
   select(-scheme_name)
 ```
@@ -573,7 +625,7 @@ mod_data <- mod_data %>%
 
 ## permit - If the waterpoint is permitted
 
-```{r}
+```{r permit}
 mod_data %>%
   filter(label == "train") %>% 
   select(permit) %>% 
@@ -590,7 +642,7 @@ Leaving permit as is.
 
 ## extraction_type - The kind of extraction the waterpoint uses, extraction_type_group - The kind of extraction the waterpoint uses, extraction_type_class - The kind of extraction the waterpoint uses
 
-```{r}
+```{r extraction}
 mod_data %>%
   filter(label == "train") %>% 
   select(extraction_type, extraction_type_group, extraction_type_class) %>% 
@@ -614,7 +666,7 @@ No missing values for any of these features. Give very similar information at va
 
 ## management - How the waterpoint is managed and management_group - How the waterpoint is managed
 
-```{r}
+```{r management}
 mod_data %>%
   filter(label == "train") %>% 
   select(management, management_group) %>% 
@@ -637,7 +689,7 @@ Management is a more grainular version of management_group. Keeping both for now
 
 ## payment - What the water costs and payment_type - What the water costs
 
-```{r}
+```{r payment}
 mod_data %>% 
   filter(label == "train") %>% 
   select(payment, payment_type) %>% 
@@ -646,14 +698,14 @@ mod_data %>%
 
 There is no difference between payment and payment_type. Removing payment_type.
 
-```{r}
+```{r payment-type-remove}
 mod_data <- mod_data %>% 
   select(-payment_type)
 ```
 
 ## water_quality - The quality of the water and quality_group - The quality of the water
 
-```{r}
+```{r water-quality}
 mod_data %>%
   filter(label == "train") %>% 
   select(water_quality, quality_group) %>% 
@@ -682,7 +734,7 @@ Water quality is a more granular version than quality group. Keeping both for no
 
 ## quantity - The quantity of water and quantity_group - The quantity of water ####
 
-```{r}
+```{r quantity}
 mod_data %>%
   filter(label == "train") %>% 
   select(quantity, quantity_group) %>% 
@@ -708,14 +760,14 @@ mod_data %>%
 
 There is no difference between these two fields. Removing quantity_group.
 
-```{r}
+```{r quantity-group-remove}
 mod_data <- mod_data %>% 
   select(-quantity_group)
 ```
 
 ## source - The source of the water, source_type - The source of the water, and source_class - The source of the water
 
-```{r}
+```{r source}
 mod_data %>%
   filter(label == "train") %>% 
   select(source, source_type, source_class) %>% 
@@ -754,7 +806,7 @@ Keeping all for now.
 
 ## waterpoint_type - The kind of waterpoint and waterpoint_type_group - The kind of waterpoint
 
-```{r}
+```{r waterpoint_type}
 mod_data %>% 
   filter(label == "train") %>% 
   select(waterpoint_type, waterpoint_type_group) %>% 
@@ -763,7 +815,68 @@ mod_data %>%
 
 These variables are essentially the same except for communal standpipe is 2 categories in the waterpoint_type variable instead of just 1. Going to remove waterpoint_type_group.
 
-```{r}
+```{r waterpoint-type-group-remove}
 mod_data <- mod_data %>% 
   select(-waterpoint_type_group)
 ```
+
+# Find % of Missing Data for each Variable
+
+If missing data for a certain feature or sample is more than 5% then you probably should leave that feature or sample out. We therefore check for features (columns) where more than 5% of the data is missing.
+
+```{r}
+mod_data %>% 
+  #filter(label == "train") %>% 
+  select(-label, -id) %>% 
+  map(~ sum(is.na(.))/length(.)*100)
+
+mod_data %>% 
+  filter(label == "test") %>% 
+  select(-label, -id, -status_group) %>% 
+  map(~ sum(is.na(.))/length(.)*100)
+```
+
+# Final Modifications for Modelsing
+
+I want to remove gps_height, population, and waterpoint_age from the data since those had a high percent of NAs and I created a grouping categorical variable for those features. I also want to replace any NAs in the data with "Unknown" and treat it like another factor level. I want to convert all character vectors to factors for modeling and remove the spaces in the status group names.
+
+```{r}
+mod_data <- mod_data %>% 
+  select(-gps_height, -population, -waterpoint_age) %>% 
+  mutate_at(vars(public_meeting, scheme_management, permit, management, management_group, payment, water_quality, quality_group, quantity, source, source_class), funs(replace_na(., "Unknown"))) %>%
+  mutate_if(is.character, as.factor)
+  
+levels(mod_data$status_group) <- c("functional", "functional_needs_repair", "non_functional")
+```
+
+## One Hot Encoding
+
+caret includes several functions to pre-process the predictor data. It assumes that all of the data are numeric (i.e. factors have been converted to dummy variables via model.matrix, dummyVars or other means). 
+
+According to this [stackoverflow question](https://stats.stackexchange.com/questions/135671/how-does-caret-handle-factors) using formula to train a model does automatically convert factors to one hot endoding, but in this [question](https://stats.stackexchange.com/questions/37370/random-forest-computing-time-in-r) it might be more efficient to not use the formula when training the model.
+
+```{r}
+# removing columns that are reduntant and more vague
+mod_data <- mod_data %>% 
+  select(-source_type, -source_class, -quality_group, -management_group, -extraction_type_class, -extraction_type_group)
+
+train_outcome <- mod_data %>%
+  filter(label == "train") %>%
+  select(id, status_group)
+
+dummies <- dummyVars(status_group ~ ., data = mod_data)
+one_hot_data <- data.frame(predict(dummies, newdata = mod_data))
+```
+
+
+
+```{r}
+train_one_hot_data <- one_hot_data %>%
+  filter(label.train == 1) %>%
+  select(-label.test, -label.train, -id)
+
+test_one_hot_data <- one_hot_data %>%
+  filter(label.test == 1) %>%
+  select(-label.test, -label.train)
+```
+

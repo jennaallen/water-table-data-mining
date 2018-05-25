@@ -873,7 +873,7 @@ one_hot_data <- data.frame(predict(dummies, newdata = mod_data))
 ```{r}
 train_one_hot_data <- one_hot_data %>%
   filter(label.train == 1) %>%
-  select(-label.test, -label.train, -id)
+  select(-label.test, -label.train)
 
 test_one_hot_data <- one_hot_data %>%
   filter(label.test == 1) %>%

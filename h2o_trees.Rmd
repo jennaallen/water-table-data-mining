@@ -61,6 +61,11 @@ submission_1 <- test_mod_data %>%
 write.csv(submission_1, "submission1.csv", row.names = FALSE)
 ```
 
+
+```{r}
+rf_model_imp <- h2o.varimp(rf_model)
+```
+
 ```{r}
 rf_model_1000 <- h2o.randomForest(
   x = predictors,
@@ -186,5 +191,19 @@ gbm_model <- h2o.gbm(
 
 ```{r}
 h2o.confusionMatrix(gbm_model)
+```
+
+```{r}
+xgboost_model <- h2o.xgboost(
+  x = predictors,
+  y = target,
+  training_frame = training_hex,
+  model_id = "xgboost_ntrees100",
+  ntrees = 100,
+  seed = 1234)
+```
+
+```{r}
+h2o.confusionMatrix(xgboost_model)
 ```
 

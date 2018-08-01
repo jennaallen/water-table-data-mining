@@ -61,6 +61,7 @@ submission_1 <- test_mod_data %>%
 write.csv(submission_1, "submission1.csv", row.names = FALSE)
 ```
 
+Classification rate of 0.8141. The leader has classification rate of 0.8285. This result put me in the top 11% of models.
 
 ```{r}
 rf_model_imp <- h2o.varimp(rf_model)

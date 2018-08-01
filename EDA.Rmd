@@ -836,7 +836,7 @@ mod_data %>%
   map(~ sum(is.na(.))/length(.)*100)
 ```
 
-# Final Modifications for Modelsing
+# Final Modifications for Modeling
 
 I want to remove gps_height, population, and waterpoint_age from the data since those had a high percent of NAs and I created a grouping categorical variable for those features. I also want to replace any NAs in the data with "Unknown" and treat it like another factor level. I want to convert all character vectors to factors for modeling and remove the spaces in the status group names.
 
